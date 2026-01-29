@@ -11,16 +11,15 @@
         import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- DATABASE CONFIGURATION ---
-        let firebaseConfig = {};
-        let appId = 'competency-tracker-default';
-
-        // 1. AUTO-DETECT CANVAS CONFIG (Works in this preview)
-        try {
-            if (typeof __firebase_config !== 'undefined') {
-                firebaseConfig = JSON.parse(__firebase_config);
-                appId = typeof __app_id !== 'undefined' ? __app_id : 'competency-tracker-default';
-            }
+       const firebaseConfig = {
+  apiKey: "AIzaSyC7w8g_AFcNUttIAuRALA6EM00e1ubqGRY",
+  authDomain: "endo-competencies.firebaseapp.com",
+  projectId: "endo-competencies",
+  storageBucket: "endo-competencies.firebasestorage.app",
+  messagingSenderId: "562201820668",
+  appId: "1:562201820668:web:dc795d989dff34bb0f8679",
+  measurementId: "G-KP79BCTVL1"
+};
         } catch (e) {
             console.warn("Canvas Environment not detected.");
         }

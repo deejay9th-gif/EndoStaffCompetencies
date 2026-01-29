@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Staff Competency Tracker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- DATABASE CONFIGURATION ---
+        let firebaseConfig = {};
+        let appId = 'competency-tracker-default';
+
+        // 1. AUTO-DETECT CANVAS CONFIG (Works in this preview)
+        try {
+            if (typeof __firebase_config !== 'undefined') {
+                firebaseConfig = JSON.parse(__firebase_config);
+                appId = typeof __app_id !== 'undefined' ? __app_id : 'competency-tracker-default';
+            }
+        } catch (e) {
+            console.warn("Canvas Environment not detected.");
+        }
+
+        // 2. MANUAL CONFIG FOR GITHUB (Fallback)
+        // If the auto-detect fails (like when you host on GitHub), it uses this:
+        if (Object.keys(firebaseConfig).length === 0) {
+            firebaseConfig = {
+                apiKey: "PASTE_YOUR_API_KEY_HERE",
+                authDomain: "your-project.firebaseapp.com",
+                projectId: "your-project",
+                storageBucket: "your-project.appspot.com",
+                messagingSenderId: "123456789",
+                appId: "1:123456789:web:..."
+            };
+            console.log("Using manual config");
+        }
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        // --- SECURITY CONFIG ---
+        // EDIT THESE PASSCODES BEFORE SHARING
+        const ADMIN_PASSCODE = "Iamn9thawk"; 
+        const STAFF_PASSCODE = "EndoWPHSL24HL";
+
+        window.state = {
+            user: null,
+            categories: [],
+            skills: [],
+            staffStore: {},
+            lastUpdated: null,
+            unsubscribe: null,
+            accessLevel: null // 'admin' or 'staff'
+        };
+
+        const initAuth = async () => {
+            try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                    try {
+                        await signInWithCustomToken(auth, __initial_auth_token);
+                    } catch (tokenErr) {
+                        await signInAnonymously(auth);
+                    }
+                } else {
+                    await signInAnonymously(auth);
+                }
+            } catch (err) {
+                console.error("Auth Error:", err);
+                
+                let errorMsg = "Connection Failed";
+                let debugInfo = "";
+
+                // Handle specific Firebase Auth errors
+                if (err.code === 'auth/configuration-not-found' || err.code === 'auth/operation-not-allowed') {
+                    errorMsg = "Setup Required";
+                    debugInfo = "⚠️ ERROR: You must enable 'Anonymous' sign-in in the Firebase Console.\nGo to Build > Authentication > Sign-in method > Enable Anonymous.";
+                    console.log(debugInfo); // Log to console instead of alert to be less intrusive in Preview
+                }
+                
+                // Only show alert if we are definitely NOT in the preview environment (manual config usage)
+                if (Object.keys(firebaseConfig).length > 0 && typeof __firebase_config === 'undefined') {
+                     if (err.code === 'auth/configuration-not-found') alert(debugInfo);
+                }
+
+                document.getElementById('statusText').textContent = errorMsg;
+                document.getElementById('syncStatus').className = 'inline-block w-2 h-2 rounded-full bg-red-500';
+            }
+        };
+
+        onAuthStateChanged(auth, (user) => {
+            window.state.user = user;
+            if (user) {
+                setupRealtimeSync();
+            }
+        });
+
+        initAuth();
+
+        // --- LOGIN LOGIC ---
+        window.attemptLogin = function() {
+            const input = document.getElementById('loginPassInput').value.trim();
+            const errorMsg = document.getElementById('loginError');
+            
+            if (input === ADMIN_PASSCODE) {
+                // ADMIN MODE
+                window.state.accessLevel = 'admin';
+                unlockApp("Administrator Access");
+                document.getElementById('adminFooter').classList.remove('hidden');
+                document.getElementById('authModeLabel').textContent = "ADMIN MODE";
+                document.getElementById('authModeLabel').classList.add('text-blue-600', 'bg-blue-50', 'border-blue-200');
+                // Show Header Upload Button for easier access
+                document.getElementById('headerUploadBtn').classList.remove('hidden');
+            } else if (input === STAFF_PASSCODE) {
+                // STAFF MODE
+                window.state.accessLevel = 'staff';
+                unlockApp("Staff View Only");
+                document.getElementById('adminFooter').classList.add('hidden');
+                document.getElementById('headerUploadBtn').classList.add('hidden');
+                document.getElementById('authModeLabel').textContent = "STAFF VIEW";
+                document.getElementById('authModeLabel').classList.add('text-slate-600', 'bg-slate-50', 'border-slate-200');
+            } else {
+                // FAILED
+                errorMsg.classList.remove('hidden');
+                document.getElementById('loginPassInput').classList.add('border-red-500', 'ring-2', 'ring-red-100');
+                setTimeout(() => {
+                    document.getElementById('loginPassInput').classList.remove('border-red-500', 'ring-2', 'ring-red-100');
+                }, 1000);
+            }
+        };
+
+        function unlockApp(modeText) {
+            document.getElementById('loginOverlay').classList.add('hidden');
+            document.getElementById('appContent').classList.remove('hidden');
+            document.getElementById('authModeLabel').classList.remove('hidden');
+            console.log("Logged in as: " + modeText);
+        }
+
+        // --- FIREBASE SYNC ---
+        function getCompetencyDocRef() {
+            return doc(db, 'artifacts', appId, 'public', 'data', 'competency_records', 'latest');
+        }
+
+        function setupRealtimeSync() {
+            if (window.state.unsubscribe) window.state.unsubscribe();
+            const docRef = getCompetencyDocRef();
+            
+            window.state.unsubscribe = onSnapshot(docRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    if (data.csvText) {
+                        parseCsv(data.csvText, "Live Data Active");
+                    }
+                    if (data.updatedAt) {
+                        const date = new Date(data.updatedAt);
+                        document.getElementById('lastUpdated').textContent = `Synced: ${date.getHours()}:${date.getMinutes().toString().padStart(2, '0')}`;
+                    }
+                } else {
+                    // Only show empty state if logged in
+                    if(window.state.accessLevel) {
+                         document.getElementById('loader').classList.add('hidden');
+                         if(window.state.accessLevel === 'admin') {
+                            document.getElementById('setupPanel').classList.remove('hidden');
+                         } else {
+                            document.getElementById('statusText').textContent = "No Data Available";
+                         }
+                    }
+                }
+            }, (err) => {
+                console.error("Sync Error:", err);
+                document.getElementById('statusText').textContent = "Restricted Access";
+            });
+        }
+
+        window.manualRefresh = function() {
+            const btn = document.getElementById('refreshBtn');
+            btn.classList.add('animate-spin');
+            setupRealtimeSync();
+            setTimeout(() => btn.classList.remove('animate-spin'), 800);
+        };
+
+        window.saveToCloud = async (csvText) => {
+            if (!window.state.user || window.state.accessLevel !== 'admin') return;
+            const docRef = getCompetencyDocRef();
+            try {
+                await setDoc(docRef, {
+                    csvText: csvText,
+                    updatedAt: Date.now(),
+                    updatedBy: window.state.user.uid
+                });
+                alert("Database updated successfully!");
+                document.getElementById('adminPanel').classList.add('hidden');
+            } catch (err) {
+                alert("Upload Error: " + err.message);
+            }
+        };
+
+        // --- ADMIN PANEL LOGIC ---
+        window.toggleAdminPanel = function() {
+            document.getElementById('adminPanel').classList.toggle('hidden');
+        };
+
+        window.scrollToUpload = function() {
+            document.getElementById('adminPanel').classList.remove('hidden');
+            setTimeout(() => {
+                document.getElementById('adminPanel').scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }, 100);
+        };
+
+        // --- PARSING LOGIC ---
+        function parseCsv(csvText, statusMsg) {
+            Papa.parse(csvText, {
+                header: false,
+                skipEmptyLines: 'greedy',
+                complete: function(results) {
+                    processSheetData(results.data, statusMsg);
+                }
+            });
+        }
+
+        function processSheetData(rows, statusMsg) {
+            window.state.categories = [];
+            window.state.skills = [];
+            window.state.staffStore = {};
+
+            let headerIndex = -1;
+            for (let i = 0; i < Math.min(rows.length, 25); i++) {
+                const row = rows[i];
+                const contentCols = row.slice(2).filter(c => c && c.trim() !== "").length;
+                if (contentCols > 3) { headerIndex = i; break; }
+            }
+            
+            if (headerIndex === -1) {
+                document.getElementById('loader').classList.add('hidden');
+                document.getElementById('statusText').textContent = "Format Error";
+                return;
+            }
+
+            const headerRow = rows[headerIndex]; 
+            const staffList = [];
+            const exclusionKeywords = ['band', 'grade', 'status', 'total', 'count', 'sum', '%', 'percentage'];
+            let lastDetectedBand = "N/A";
+
+            for (let j = 2; j < headerRow.length; j++) {
+                const rawName = (headerRow[j] || "").trim();
+                if (!rawName) continue;
+                if (exclusionKeywords.some(kw => rawName.toLowerCase().includes(kw))) {
+                    lastDetectedBand = rawName;
+                    continue;
+                }
+                staffList.push({ name: rawName, colIndex: j, band: lastDetectedBand });
+                window.state.staffStore[rawName] = { name: rawName, band: lastDetectedBand, competencies: {} };
+            }
+
+            let currentCategory = "General";
+            for (let i = headerIndex + 1; i < rows.length; i++) {
+                const row = rows[i];
+                const itemLabel = (row[0] || "").trim();
+                if (!itemLabel) continue;
+
+                const hasDataInRow = staffList.some(s => {
+                    const val = (row[s.colIndex] || "").trim().toLowerCase();
+                    return ['yes', 'no', 'y', 'n', 'true', 'false', '1', '0', '✅', '❌'].includes(val);
+                });
+
+                if (!hasDataInRow && itemLabel.length > 3) {
+                    currentCategory = itemLabel;
+                    if (!window.state.categories.includes(currentCategory)) window.state.categories.push(currentCategory);
+                    continue;
+                }
+
+                window.state.skills.push({ cat: currentCategory, skill: itemLabel });
+                staffList.forEach(staff => {
+                    let val = (row[staff.colIndex] || "").trim().toLowerCase();
+                    let status = "N/A";
+                    if (['yes', 'y', 'true', '✅', '1', 'passed'].includes(val)) status = "Yes";
+                    else if (['no', 'n', 'false', '❌', '0', 'failed'].includes(val)) status = "No";
+                    window.state.staffStore[staff.name].competencies[itemLabel] = status;
+                });
+            }
+
+            populateSelectors();
+            document.getElementById('loader').classList.add('hidden');
+            document.getElementById('setupPanel').classList.add('hidden');
+            document.getElementById('mainContent').classList.remove('hidden');
+            document.getElementById('syncStatus').className = 'inline-block w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,0.6)]';
+            document.getElementById('statusText').textContent = statusMsg;
+        }
+
+        function populateSelectors() {
+            const select = document.getElementById('staffSelect');
+            const catSelect = document.getElementById('categoryFilter');
+            const currentSelected = select.value;
+            
+            select.innerHTML = '<option value="">-- Select Your Name --</option>';
+            catSelect.innerHTML = '<option value="all">All Competencies</option>';
+
+            const staffByBand = {};
+            Object.values(window.state.staffStore).forEach(staff => {
+                if (!staffByBand[staff.band]) staffByBand[staff.band] = [];
+                staffByBand[staff.band].push(staff);
+            });
+
+            const sortedBands = Object.keys(staffByBand).sort((a, b) => b.localeCompare(a, undefined, { numeric: true }));
+
+            sortedBands.forEach(band => {
+                const group = document.createElement('optgroup');
+                group.label = band;
+                staffByBand[band].sort((a, b) => a.name.localeCompare(b.name)).forEach(staff => {
+                    const opt = document.createElement('option');
+                    opt.value = staff.name;
+                    opt.textContent = staff.name;
+                    group.appendChild(opt);
+                });
+                select.appendChild(group);
+            });
+
+            window.state.categories.forEach(cat => {
+                const opt = document.createElement('option');
+                opt.value = cat;
+                opt.textContent = cat;
+                catSelect.appendChild(opt);
+            });
+
+            if (currentSelected && window.state.staffStore[currentSelected]) {
+                select.value = currentSelected;
+                updateDisplay();
+            }
+        }
+
+        window.updateDisplay = function() {
+            const name = document.getElementById('staffSelect').value;
+            const filter = document.getElementById('categoryFilter').value;
+            const tableBody = document.getElementById('competencyTableBody');
+            
+            if (!name) {
+                document.getElementById('resultsContainer').classList.add('hidden');
+                document.getElementById('statsSummary').classList.add('hidden');
+                return;
+            }
+
+            const profile = window.state.staffStore[name];
+            document.getElementById('resultsContainer').classList.remove('hidden');
+            document.getElementById('displayName').textContent = profile.name;
+            document.getElementById('displayBand').textContent = profile.band;
+            
+            tableBody.innerHTML = '';
+            let countYes = 0, countNo = 0;
+            let lastCat = null;
+
+            window.state.skills.forEach(item => {
+                if (filter !== 'all' && item.cat !== filter) return;
+                const status = profile.competencies[item.skill] || "N/A";
+                if (status === "Yes") countYes++;
+                if (status === "No") countNo++;
+
+                if (filter === 'all' && item.cat !== lastCat) {
+                    const hRow = document.createElement('tr');
+                    hRow.className = "category-row";
+                    hRow.innerHTML = `<td colspan="2" class="px-4 py-3 text-[10px] uppercase tracking-[0.2em] font-bold">${item.cat}</td>`;
+                    tableBody.appendChild(hRow);
+                    lastCat = item.cat;
+                }
+
+                const row = document.createElement('tr');
+                let badgeClass = status === "Yes" ? "status-yes" : (status === "No" ? "status-no" : "status-na");
+                row.innerHTML = `
+                    <td class="p-4 text-slate-700 text-sm font-medium border-b border-slate-50">${item.skill}</td>
+                    <td class="p-4 text-center border-b border-slate-50">
+                        <span class="inline-block w-24 px-3 py-1.5 rounded-lg text-[11px] font-black border transition-all ${badgeClass}">
+                            ${status.toUpperCase()}
+                        </span>
+                    </td>`;
+                tableBody.appendChild(row);
+            });
+
+            document.getElementById('statsSummary').classList.remove('hidden');
+            document.getElementById('countAchieved').textContent = countYes;
+            document.getElementById('countNo').textContent = countNo;
+        }
+
+        window.handleAdminUpload = function(e) {
+            const file = e.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (event) => window.saveToCloud(event.target.result);
+            reader.readAsText(file);
+        };
+    </script>
+    <style>
+        .status-yes { background-color: #dcfce7; color: #166534; border-color: #bbf7d0; } 
+        .status-no { background-color: #fee2e2; color: #991b1b; border-color: #fecaca; }  
+        .status-na { background-color: #f1f5f9; color: #475569; border-color: #e2e8f0; }  
+        .sticky-header { position: sticky; top: 0; z-index: 20; background-color: #ffffff; }
+        .category-row { position: sticky; top: 48px; z-index: 10; background-color: #334155; color: white; }
+        .loading-spinner { border-top-color: #3b82f6; animation: spinner 0.6s linear infinite; }
+        @keyframes spinner { to { transform: rotate(360deg); } }
+        @media print { .no-print { display: none; } #app { max-width: 100%; padding: 0; } }
+        .fade-in { animation: fadeIn 0.4s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body class="bg-[#f8fafc] min-h-screen font-sans text-slate-900">
+
+    <!-- LOGIN OVERLAY -->
+    <div id="loginOverlay" class="fixed inset-0 z-50 bg-slate-900 flex items-center justify-center p-4">
+        <div class="bg-white rounded-[2rem] shadow-2xl p-8 max-w-sm w-full fade-in text-center">
+            <div class="mb-6 flex justify-center">
+                <div class="w-16 h-16 bg-slate-100 rounded-2xl flex items-center justify-center text-3xl">
+                    🔒
+                </div>
+            </div>
+            <h1 class="text-2xl font-black mb-2 text-slate-900">Private Access</h1>
+            <p class="text-slate-500 text-sm mb-6">Enter the staff or admin access code to view the competency tracker.</p>
+            
+            <input type="password" id="loginPassInput" 
+                class="w-full p-4 bg-slate-50 border border-slate-200 rounded-2xl mb-4 font-mono text-center tracking-widest text-lg outline-none focus:ring-2 focus:ring-blue-500 transition-all" 
+                placeholder="ACCESS CODE">
+            
+            <p id="loginError" class="hidden text-red-500 text-xs font-bold mb-4 uppercase tracking-wide">Incorrect Access Code</p>
+
+            <button onclick="attemptLogin()" class="w-full py-4 bg-slate-900 text-white font-black rounded-2xl shadow-lg hover:bg-black transition-all">
+                Unlock
+            </button>
+        </div>
+    </div>
+
+    <!-- MAIN APP CONTENT (Hidden until login) -->
+    <div id="appContent" class="hidden max-w-5xl mx-auto px-4 py-8 pb-32">
+        <header class="mb-8 flex flex-col md:flex-row md:items-end justify-between gap-6 no-print">
+            <div>
+                <h1 class="text-3xl font-black text-slate-900 tracking-tight mb-2">Staff Competency</h1>
+                <div class="flex flex-wrap items-center gap-3">
+                    <p class="text-slate-500 flex items-center gap-2">
+                        <span id="syncStatus" class="inline-block w-2 h-2 rounded-full bg-amber-400"></span>
+                        <span id="statusText" class="text-sm font-medium">Connecting...</span>
+                    </p>
+                    <span id="authModeLabel" class="hidden text-[10px] uppercase font-bold tracking-widest px-2 py-0.5 rounded border"></span>
+                    <button id="headerUploadBtn" onclick="scrollToUpload()" class="hidden ml-2 px-3 py-1 bg-blue-600 text-white text-xs font-bold rounded-lg shadow-sm hover:bg-blue-700 transition-all uppercase tracking-wider">
+                        Update Data
+                    </button>
+                    <span id="lastUpdated" class="text-[10px] text-slate-400 uppercase font-bold tracking-widest bg-slate-100 px-2 py-0.5 rounded border border-slate-200"></span>
+                    <button id="refreshBtn" onclick="manualRefresh()" class="p-1.5 bg-white border border-slate-200 rounded-lg shadow-sm hover:shadow-md transition-all text-slate-500">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                        </svg>
+                    </button>
+                </div>
+            </div>
+            <div id="statsSummary" class="hidden flex gap-4 fade-in">
+                <div class="bg-white border border-slate-100 px-5 py-3 rounded-2xl shadow-sm text-center">
+                    <span class="text-[10px] uppercase font-black text-green-600 tracking-widest block mb-1">Pass</span>
+                    <span id="countAchieved" class="text-2xl font-black text-slate-800">0</span>
+                </div>
+                <div class="bg-white border border-slate-100 px-5 py-3 rounded-2xl shadow-sm text-center">
+                    <span class="text-[10px] uppercase font-black text-red-600 tracking-widest block mb-1">Gap</span>
+                    <span id="countNo" class="text-2xl font-black text-slate-800">0</span>
+                </div>
+            </div>
+        </header>
+
+        <div id="setupPanel" class="hidden bg-white p-12 rounded-[2rem] shadow-xl border border-slate-100 text-center fade-in">
+            <h2 class="text-2xl font-black text-slate-900 mb-2">Ready to Upload</h2>
+            <p class="text-slate-500 mb-8 max-w-sm mx-auto">Admin access verified. You can now update the database.</p>
+            <button onclick="scrollToUpload()" class="bg-slate-900 text-white px-10 py-4 rounded-2xl font-black hover:bg-black transition-all shadow-xl">
+                Open Upload Tool
+            </button>
+        </div>
+
+        <div id="loader" class="flex flex-col items-center justify-center py-32">
+            <div class="loading-spinner w-10 h-10 border-4 border-slate-200 rounded-full mb-6"></div>
+            <p class="text-slate-400 font-bold uppercase tracking-widest text-xs">Syncing Data...</p>
+        </div>
+
+        <div id="mainContent" class="hidden fade-in">
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8 no-print">
+                <div class="bg-white p-2 rounded-2xl shadow-sm border border-slate-100">
+                    <select id="staffSelect" onchange="updateDisplay()" class="w-full p-4 bg-transparent font-bold text-slate-800 outline-none">
+                        <option value="">-- Select Your Name --</option>
+                    </select>
+                </div>
+                <div class="bg-white p-2 rounded-2xl shadow-sm border border-slate-100">
+                    <select id="categoryFilter" onchange="updateDisplay()" class="w-full p-4 bg-transparent font-bold text-slate-500 outline-none">
+                        <option value="all">Filter Categories</option>
+                    </select>
+                </div>
+            </div>
+
+            <div id="resultsContainer" class="hidden">
+                <div class="bg-white rounded-[2rem] border border-slate-200 shadow-2xl overflow-hidden">
+                    <div class="bg-slate-900 text-white p-8 flex justify-between items-center">
+                        <div>
+                            <h2 id="displayName" class="text-3xl font-black tracking-tight">Name</h2>
+                            <div class="flex items-center gap-2 mt-2">
+                                <span id="displayBand" class="bg-blue-600 text-white px-3 py-1 rounded-full text-[10px] font-black uppercase">Grade</span>
+                            </div>
+                        </div>
+                        <button onclick="window.print()" class="bg-white/10 hover:bg-white/20 px-6 py-3 rounded-xl text-xs font-black no-print transition-all">
+                            PRINT
+                        </button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead class="sticky-header shadow-sm">
+                                <tr class="bg-white text-slate-400 text-[10px] uppercase font-black tracking-widest">
+                                    <th class="p-6 border-b border-slate-100">Competency</th>
+                                    <th class="p-6 border-b border-slate-100 w-40 text-center">Status</th>
+                                </tr>
+                            </thead>
+                            <tbody id="competencyTableBody"></tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <footer id="adminFooter" class="hidden mt-20 pt-10 border-t border-slate-200 no-print text-center">
+            <button type="button" onclick="toggleAdminPanel()" id="adminStatusLabel" class="inline-block py-2 px-6 text-blue-600 hover:text-blue-700 text-[10px] transition-all uppercase font-black tracking-[0.4em] bg-blue-50 rounded-full border border-blue-100 hover:shadow-sm">
+                Admin Controls
+            </button>
+            
+            <div id="adminPanel" class="hidden mt-10 bg-white p-10 rounded-[2.5rem] border border-slate-200 shadow-2xl max-w-lg mx-auto fade-in">
+                <h3 class="text-lg font-black text-slate-900 mb-2">Database Administrator</h3>
+                <p class="text-sm text-slate-500 mb-8 leading-relaxed">Select your competency CSV file to update the cloud records for all staff.</p>
+                <label class="block w-full cursor-pointer">
+                    <input type="file" accept=".csv" onchange="handleAdminUpload(event)" class="hidden">
+                    <div class="bg-slate-50 border-2 border-dashed border-slate-200 p-12 rounded-3xl hover:bg-slate-100 hover:border-blue-400 transition-all text-center">
+                        <div class="bg-white w-12 h-12 rounded-xl shadow-sm flex items-center justify-center mx-auto mb-4">
+                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6 text-slate-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                            </svg>
+                        </div>
+                        <span class="text-sm font-black text-slate-600 block">CHOOSE CSV FILE</span>
+                        <span class="text-xs text-slate-400 mt-1 block">Drag and drop or click to browse</span>
+                    </div>
+                </label>
+            </div>
+        </footer>
+    </div>
+</body>
+</html>

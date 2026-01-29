@@ -11,31 +11,29 @@
         import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-       const firebaseConfig = {
-  apiKey: "AIzaSyC7w8g_AFcNUttIAuRALA6EM00e1ubqGRY",
-  authDomain: "endo-competencies.firebaseapp.com",
-  projectId: "endo-competencies",
-  storageBucket: "endo-competencies.firebasestorage.app",
-  messagingSenderId: "562201820668",
-  appId: "1:562201820668:web:dc795d989dff34bb0f8679",
-  measurementId: "G-KP79BCTVL1"
-};
-        } catch (e) {
-            console.warn("Canvas Environment not detected.");
-        }
+        // --- DATABASE CONFIGURATION ---
+        // 1. Manual Config (For GitHub Hosting)
+        let firebaseConfig = {
+            apiKey: "AIzaSyC7w8g_AFcNUttIAuRALA6EM00e1ubqGRY",
+            authDomain: "endo-competencies.firebaseapp.com",
+            projectId: "endo-competencies",
+            storageBucket: "endo-competencies.firebasestorage.app",
+            messagingSenderId: "562201820668",
+            appId: "1:562201820668:web:dc795d989dff34bb0f8679",
+            measurementId: "G-KP79BCTVL1"
+        };
 
-        // 2. MANUAL CONFIG FOR GITHUB (Fallback)
-        // If the auto-detect fails (like when you host on GitHub), it uses this:
-        if (Object.keys(firebaseConfig).length === 0) {
-            firebaseConfig = {
-                apiKey: "PASTE_YOUR_API_KEY_HERE",
-                authDomain: "your-project.firebaseapp.com",
-                projectId: "your-project",
-                storageBucket: "your-project.appspot.com",
-                messagingSenderId: "123456789",
-                appId: "1:123456789:web:..."
-            };
-            console.log("Using manual config");
+        let appId = 'competency-tracker-default';
+
+        // 2. Auto-Detect Canvas Config (Priority for Preview Mode)
+        // This ensures the app works right now in this window, even if the manual config above has issues.
+        try {
+            if (typeof __firebase_config !== 'undefined') {
+                firebaseConfig = JSON.parse(__firebase_config);
+                appId = typeof __app_id !== 'undefined' ? __app_id : 'competency-tracker-default';
+            }
+        } catch (e) {
+            console.warn("Canvas Environment not detected, using manual config.");
         }
 
         const app = initializeApp(firebaseConfig);
@@ -78,12 +76,12 @@
                 if (err.code === 'auth/configuration-not-found' || err.code === 'auth/operation-not-allowed') {
                     errorMsg = "Setup Required";
                     debugInfo = "⚠️ ERROR: You must enable 'Anonymous' sign-in in the Firebase Console.\nGo to Build > Authentication > Sign-in method > Enable Anonymous.";
-                    console.log(debugInfo); // Log to console instead of alert to be less intrusive in Preview
+                    console.log(debugInfo); 
                 }
                 
-                // Only show alert if we are definitely NOT in the preview environment (manual config usage)
-                if (Object.keys(firebaseConfig).length > 0 && typeof __firebase_config === 'undefined') {
-                     if (err.code === 'auth/configuration-not-found') alert(debugInfo);
+                // Only alert if we are definitely using manual config (not in preview)
+                if (typeof __firebase_config === 'undefined' && err.code === 'auth/configuration-not-found') {
+                    alert(debugInfo);
                 }
 
                 document.getElementById('statusText').textContent = errorMsg;

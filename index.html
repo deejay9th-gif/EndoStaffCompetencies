@@ -11,19 +11,22 @@
         import { getAuth, signInWithCustomToken, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // --- DATABASE CONFIGURATION ---
+        // --- DATABASE CONFIGURATION (ACTION REQUIRED) ---
         // 1. Manual Config (For GitHub Hosting)
+        // YOU MUST REPLACE THESE VALUES WITH YOUR OWN FIREBASE PROJECT CONFIG
+        // Changed to 'let' to allow environment switching if needed
         let firebaseConfig = {
             apiKey: "AIzaSyC7w8g_AFcNUttIAuRALA6EM00e1ubqGRY",
             authDomain: "endo-competencies.firebaseapp.com",
             projectId: "endo-competencies",
             storageBucket: "endo-competencies.firebasestorage.app",
             messagingSenderId: "562201820668",
-            appId: "1:562201820668:web:dc795d989dff34bb0f8679",
-            measurementId: "G-KP79BCTVL1"
+            appId: "1:562201820668:web:58afd7cb4c7a5e870f8679",
+            measurementId: "G-CHEMLTDK26"
         };
 
-        let appId = 'competency-tracker-default';
+        // Change this ID to something unique for your organization
+        let appId = 'my-staff-tracker-v1';
 
         // 2. Auto-Detect Canvas Config (Priority for Preview Mode)
         // This ensures the app works right now in this window, even if the manual config above has issues.
@@ -80,8 +83,8 @@
                 }
                 
                 // Only alert if we are definitely using manual config (not in preview)
-                if (typeof __firebase_config === 'undefined' && err.code === 'auth/configuration-not-found') {
-                    alert(debugInfo);
+                if (typeof __firebase_config === 'undefined' && (err.code === 'auth/configuration-not-found' || err.code === 'auth/invalid-api-key')) {
+                    alert("CONFIGURATION ERROR: Please check your firebaseConfig in the code. " + err.message);
                 }
 
                 document.getElementById('statusText').textContent = errorMsg;
@@ -169,7 +172,17 @@
                 }
             }, (err) => {
                 console.error("Sync Error:", err);
-                document.getElementById('statusText').textContent = "Restricted Access";
+                if (err.code === 'permission-denied') {
+                    document.getElementById('statusText').textContent = "Database Locked";
+                    document.getElementById('syncStatus').className = 'inline-block w-2 h-2 rounded-full bg-red-500';
+                    // Show helpful error for developer
+                    if (typeof __firebase_config === 'undefined') {
+                        const msg = "DATABASE PERMISSION ERROR:\n\nYour app cannot access the database. This is a Security Rule issue in Firebase.\n\nFIX:\n1. Go to Firebase Console > Build > Firestore Database > Rules.\n2. Change 'allow read, write: if false;' to 'allow read, write: if request.auth != null;'\n3. Click Publish.";
+                        alert(msg);
+                    }
+                } else {
+                    document.getElementById('statusText').textContent = "Restricted Access";
+                }
             });
         }
 
@@ -192,7 +205,11 @@
                 alert("Database updated successfully!");
                 document.getElementById('adminPanel').classList.add('hidden');
             } catch (err) {
-                alert("Upload Error: " + err.message);
+                if (err.code === 'permission-denied') {
+                     alert("PERMISSION ERROR: Your database rules are blocking the save. Go to Firebase Console > Firestore Database > Rules, and change them to 'allow read, write: if request.auth != null;'");
+                } else {
+                     alert("Upload Error: " + err.message);
+                }
             }
         };
 
